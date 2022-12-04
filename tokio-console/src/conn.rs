@@ -5,7 +5,11 @@ use console_api::instrument::{
 use console_api::tasks::TaskDetails;
 use futures::stream::StreamExt;
 use std::{error::Error, pin::Pin, time::Duration};
-use tonic::{transport::Channel, transport::Uri, Streaming};
+use tokio::net::UnixStream;
+use tonic::{
+    transport::{Channel, Endpoint, Uri},
+    Streaming,
+};
 
 #[derive(Debug)]
 pub struct Connection {
@@ -78,7 +82,23 @@ impl Connection {
                 tokio::time::sleep(backoff).await;
             }
             let try_connect = async {
-                let mut client = InstrumentClient::connect(self.target.clone()).await?;
+                let channel = match self.target.scheme_str() {
+                    None | Some("file") => {
+                        // Dummy endpoint is ignored by the connector.
+                        let endpoint = Endpoint::from_static("http://localhost");
+                        let path = self.target.path().to_owned();
+                        endpoint
+                            .connect_with_connector(tower::service_fn(move |_| {
+                                UnixStream::connect(path.clone())
+                            }))
+                            .await?
+                    }
+                    _ => {
+                        let endpoint = Endpoint::try_from(self.target.clone())?;
+                        endpoint.connect().await?
+                    }
+                };
+                let mut client = InstrumentClient::new(channel);
                 let request = tonic::Request::new(InstrumentRequest {});
                 let stream = Box::new(client.watch_updates(request).await?.into_inner());
                 Ok::<State, Box<dyn Error + Send + Sync>>(State::Connected { client, stream })
