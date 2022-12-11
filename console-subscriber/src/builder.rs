@@ -1,7 +1,7 @@
 use super::{ConsoleLayer, Server};
 use std::{
-    net::{SocketAddr, ToSocketAddrs},
-    path::PathBuf,
+    net::{IpAddr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
+    path::{Path, PathBuf},
     thread,
     time::Duration,
 };
@@ -32,7 +32,7 @@ pub struct Builder {
     pub(crate) retention: Duration,
 
     /// The address on which to serve the RPC server.
-    pub(super) server_addr: SocketAddr,
+    pub(super) server_addr: ServerAddr,
 
     /// If and where to save a recording of the events.
     pub(super) recording_path: Option<PathBuf>,
@@ -58,7 +58,7 @@ impl Default for Builder {
             publish_interval: ConsoleLayer::DEFAULT_PUBLISH_INTERVAL,
             retention: ConsoleLayer::DEFAULT_RETENTION,
             poll_duration_max: ConsoleLayer::DEFAULT_POLL_DURATION_MAX,
-            server_addr: SocketAddr::new(Server::DEFAULT_IP, Server::DEFAULT_PORT),
+            server_addr: ServerAddr::Tcp(SocketAddr::new(Server::DEFAULT_IP, Server::DEFAULT_PORT)),
             recording_path: None,
             filter_env_var: "RUST_LOG".to_string(),
             self_trace: false,
@@ -138,7 +138,7 @@ impl Builder {
     /// defaults.
     ///
     /// [environment variable]: `Builder::with_default_env`
-    pub fn server_addr(self, server_addr: impl Into<SocketAddr>) -> Self {
+    pub fn server_addr(self, server_addr: impl Into<ServerAddr>) -> Self {
         Self {
             server_addr: server_addr.into(),
             ..self
@@ -231,11 +231,14 @@ impl Builder {
         }
 
         if let Ok(bind) = std::env::var("TOKIO_CONSOLE_BIND") {
-            self.server_addr = bind
-                .to_socket_addrs()
-                .expect("TOKIO_CONSOLE_BIND must be formatted as HOST:PORT, such as localhost:4321")
-                .next()
-                .expect("tokio console could not resolve TOKIO_CONSOLE_BIND");
+            self.server_addr = ServerAddr::Tcp(
+                bind.to_socket_addrs()
+                    .expect(
+                        "TOKIO_CONSOLE_BIND must be formatted as HOST:PORT, such as localhost:4321",
+                    )
+                    .next()
+                    .expect("tokio console could not resolve TOKIO_CONSOLE_BIND"),
+            );
         }
 
         if let Some(interval) = duration_from_env("TOKIO_CONSOLE_PUBLISH_INTERVAL") {
@@ -453,6 +456,56 @@ impl Builder {
             .expect("console subscriber could not spawn thread");
 
         layer
+    }
+}
+
+/// Specifies the address on which a [`Server`] should listen.
+///
+/// [`Server`]: crate::Server
+#[derive(Clone, Debug)]
+pub enum ServerAddr {
+    /// A TCP address.
+    Tcp(SocketAddr),
+    /// A Unix socket address.
+    Unix(PathBuf),
+}
+
+impl From<SocketAddr> for ServerAddr {
+    fn from(addr: SocketAddr) -> ServerAddr {
+        ServerAddr::Tcp(addr)
+    }
+}
+
+impl From<SocketAddrV4> for ServerAddr {
+    fn from(addr: SocketAddrV4) -> ServerAddr {
+        ServerAddr::Tcp(addr.into())
+    }
+}
+
+impl From<SocketAddrV6> for ServerAddr {
+    fn from(addr: SocketAddrV6) -> ServerAddr {
+        ServerAddr::Tcp(addr.into())
+    }
+}
+
+impl<I> From<(I, u16)> for ServerAddr
+where
+    I: Into<IpAddr>,
+{
+    fn from(pieces: (I, u16)) -> ServerAddr {
+        ServerAddr::Tcp(pieces.into())
+    }
+}
+
+impl From<PathBuf> for ServerAddr {
+    fn from(path: PathBuf) -> ServerAddr {
+        ServerAddr::Unix(path)
+    }
+}
+
+impl<'a> From<&'a Path> for ServerAddr {
+    fn from(path: &'a Path) -> ServerAddr {
+        ServerAddr::Unix(path.to_path_buf())
     }
 }
 
